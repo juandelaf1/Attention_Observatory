@@ -1,0 +1,24 @@
+{
+  "timestamp": "2026-06-08T11:05:34.082249+00:00",
+  "ts_epoch": 1780916734.082249,
+  "gini": 0.9742,
+  "powerlaw_alpha": 2.1114,
+  "powerlaw_sigma": 0.1827,
+  "n_super_hubs": 15,
+  "super_hub_share": 0.0154,
+  "n_high_leverage": 32,
+  "churn_acceleration": 348.3288,
+  "systemic_saturation": false,
+  "n_actors": 4779,
+  "n_posts": 16384,
+  "n_platforms": 7,
+  "platforms": {
+    "github": 83,
+    "mastodon": 203,
+    "bluesky": 639,
+    "huggingface": 3000,
+    "wikipedia": 329,
+    "youtube": 5,
+    "hackernews": 520
+  }
+}

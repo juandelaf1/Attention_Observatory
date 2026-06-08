@@ -4,6 +4,9 @@ import os
 import polars as pl
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv()
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.transform.silver_to_gold import run_pipeline
@@ -273,13 +276,13 @@ def run_elt(force_simulator: bool = False):
         actors_paths.extend(tg_actors)
         posts_paths.extend(tg_posts)
 
-        if not actors_paths:
-            red_actors, red_posts = _try_youtube_ingest(bronze_dir)
-            actors_paths.extend(red_actors)
-            posts_paths.extend(red_posts)
-            red_actors2, red_posts2 = _try_reddit_ingest(bronze_dir)
-            actors_paths.extend(red_actors2)
-            posts_paths.extend(red_posts2)
+        yt_actors, yt_posts = _try_youtube_ingest(bronze_dir)
+        actors_paths.extend(yt_actors)
+        posts_paths.extend(yt_posts)
+
+        red_actors, red_posts = _try_reddit_ingest(bronze_dir)
+        actors_paths.extend(red_actors)
+        posts_paths.extend(red_posts)
 
         if not actors_paths:
             actors_paths, posts_paths = _try_simulator_fallback(bronze_dir)
