@@ -2,6 +2,13 @@
 
 Derived from Radical Pesimismo §II (asimetría topológica) and Inviabilidad §IV
 (fragmentación / límite termodinámico del feed).
+
+Implements:
+  - Feature similarity graph (cosine on scaled feature vectors)
+  - HN reply graph (comment → story)
+  - Cross-platform bridge detection
+  - PageRank, Eigenvector, Betweenness, K-Core, Rich Club
+  - Community detection (greedy modularity)
 """
 
 import numpy as np
@@ -24,28 +31,40 @@ class NetworkReport(NamedTuple):
     centralization: float
     top_degree: list[tuple[str, float]]
     top_betweenness: list[tuple[str, float]]
+    top_pagerank: list[tuple[str, float]]
+    top_eigenvector: list[tuple[str, float]]
+    k_core_number: int
+    rich_club_coefficient: float
 
 
-def _cosine_network(df: pl.DataFrame, feature_cols: list[str] | None = None) -> nx.Graph:
-    if feature_cols is None:
-        feature_cols = ["er_mean", "ppi_mean", "sentiment_avg", "afi_mean"]
-    pdf = df.select(["actor_id", "platform"] + feature_cols).to_pandas()
-    pdf = pdf.dropna(subset=feature_cols)
-    ids = pdf["actor_id"].values
-    platforms = pdf["platform"].values
-    X = pdf[feature_cols].values.astype(np.float64)
-    X = (X - X.mean(axis=0)) / (X.std(axis=0) + 1e-10)
+def _cosine_similarity(X: np.ndarray) -> np.ndarray:
     norms = np.linalg.norm(X, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     sim = X @ X.T / (norms @ norms.T)
-    sim = np.clip(sim, -1, 1)
+    return np.clip(sim, -1, 1)
+
+
+def _cosine_network(df: pl.DataFrame, feature_cols: list[str] | None = None,
+                    threshold: float = 0.85) -> nx.Graph:
+    if feature_cols is None:
+        feature_cols = ["er_mean", "ppi_mean", "sentiment_avg", "afi_mean"]
+    pdf = df.select(["actor_id", "platform", "domain"] + feature_cols).to_pandas()
+    pdf = pdf.dropna(subset=feature_cols)
+    if len(pdf) < 2:
+        return nx.Graph()
+    ids = pdf["actor_id"].values
+    platforms = pdf["platform"].values
+    domains = pdf["domain"].values
+    X = pdf[feature_cols].values.astype(np.float64)
+    X = (X - X.mean(axis=0)) / (X.std(axis=0) + 1e-10)
+    sim = _cosine_similarity(X)
     G = nx.Graph()
     for i in range(len(ids)):
-        G.add_node(ids[i], platform=platforms[i])
-    for i in range(len(ids)):
-        for j in range(i + 1, len(ids)):
-            if sim[i, j] > 0.85:
-                G.add_edge(ids[i], ids[j], weight=float(sim[i, j]))
+        G.add_node(ids[i], platform=platforms[i], domain=domains[i])
+    edges = np.argwhere(sim > threshold)
+    edges = edges[edges[:, 0] < edges[:, 1]]
+    for i, j in edges:
+        G.add_edge(ids[i], ids[j], weight=float(sim[i, j]))
     return G
 
 
@@ -73,14 +92,31 @@ def _cross_platform_bridges(G_cos: nx.Graph) -> list[dict]:
     for u, v in G_cos.edges():
         pu = G_cos.nodes[u].get("platform", "")
         pv = G_cos.nodes[v].get("platform", "")
+        du = G_cos.nodes[u].get("domain", "")
+        dv = G_cos.nodes[v].get("domain", "")
         if pu and pv and pu != pv:
             bridges.append({
                 "source": u, "target": v,
                 "platform_a": pu, "platform_b": pv,
+                "domain_a": du, "domain_b": dv,
                 "similarity": G_cos[u][v].get("weight", 0)
             })
     bridges = sorted(bridges, key=lambda x: x["similarity"], reverse=True)
     return bridges
+
+
+def _compute_rich_club(G: nx.Graph, k: int = 5) -> float:
+    try:
+        core = nx.k_core(G, k=k)
+        if core.number_of_nodes() < 2 or core.number_of_edges() < 1:
+            return 0.0
+        observed_density = nx.density(core)
+        n = core.number_of_nodes()
+        m_complete = n * (n - 1) / 2
+        random_density = core.number_of_edges() / m_complete if m_complete > 0 else 0
+        return float(observed_density / max(0.001, random_density))
+    except Exception:
+        return 0.0
 
 
 def compute_network_metrics(df: pl.DataFrame, max_nodes: int = 500) -> NetworkReport:
@@ -103,7 +139,7 @@ def compute_network_metrics(df: pl.DataFrame, max_nodes: int = 500) -> NetworkRe
             G_combined.add_edge(u, v, weight=0.5)
 
     if G_combined.number_of_nodes() < 3:
-        return NetworkReport(0, 0, 0, 0, 0, 0, 0, 0, 0, [], [])
+        return NetworkReport(0, 0, 0, 0, 0, 0, 0, 0, 0, [], [], [], [], 0, 0)
 
     from networkx.algorithms.community import greedy_modularity_communities
     deg = dict(G_combined.degree())
@@ -136,6 +172,24 @@ def compute_network_metrics(df: pl.DataFrame, max_nodes: int = 500) -> NetworkRe
         top_bc = sorted(bc.items(), key=lambda x: x[1], reverse=True)[:10]
     except Exception:
         top_bc = []
+    try:
+        pr = nx.pagerank(G_combined, weight="weight")
+        top_pr = sorted(pr.items(), key=lambda x: x[1], reverse=True)[:10]
+    except Exception:
+        top_pr = []
+    try:
+        ev = nx.eigenvector_centrality(G_combined, max_iter=1000, tol=1e-6)
+        top_ev = sorted(ev.items(), key=lambda x: x[1], reverse=True)[:10]
+    except Exception:
+        top_ev = []
+
+    try:
+        k_core = nx.core_number(G_combined)
+        k_core_val = max(k_core.values()) if k_core else 0
+    except Exception:
+        k_core_val = 0
+
+    rich_club = _compute_rich_club(G_combined)
 
     return NetworkReport(
         n_nodes=n_nodes,
@@ -148,7 +202,11 @@ def compute_network_metrics(df: pl.DataFrame, max_nodes: int = 500) -> NetworkRe
         degree_assortativity=assort,
         centralization=centralization,
         top_degree=[(str(k), float(v)) for k, v in top_deg],
-        top_betweenness=[(str(k), float(v)) for k, v in top_bc]
+        top_betweenness=[(str(k), float(v)) for k, v in top_bc],
+        top_pagerank=[(str(k), float(v)) for k, v in top_pr],
+        top_eigenvector=[(str(k), float(v)) for k, v in top_ev],
+        k_core_number=k_core_val,
+        rich_club_coefficient=rich_club,
     )
 
 
@@ -171,9 +229,24 @@ def compute_cross_platform_report(df: pl.DataFrame, max_nodes: int = 500) -> dic
         key=lambda x: x["count"], reverse=True
     )
 
+    domain_pairs = defaultdict(lambda: {"count": 0})
+    for b in bridges:
+        da, db = b["domain_a"], b["domain_b"]
+        if da and db and da != db:
+            key = tuple(sorted([da, db]))
+            domain_pairs[key]["count"] += 1
+
+    domain_summary = sorted(
+        [{"pair": f"{k[0]}-{k[1]}", "count": v["count"]}
+         for k, v in domain_pairs.items()],
+        key=lambda x: x["count"], reverse=True
+    )
+
     return {
         "total_bridges": len(bridges),
         "unique_pairs": len(pairs_summary),
         "top_pairs": pairs_summary[:10],
-        "top_bridges": bridges[:15]
+        "top_bridges": bridges[:20],
+        "cross_domain_bridges": len(domain_pairs),
+        "top_domain_pairs": domain_summary[:10],
     }

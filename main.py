@@ -18,10 +18,12 @@ except ImportError:
         return p
 from src.stats.inequality import (
     compute_inequality,
+    compute_expanded_inequality,
     compute_anomalies,
     compute_breakdown,
     summary_text,
 )
+from src.stats.concentration import concentration_by_group, compute_concentration
 
 
 def _try_youtube_ingest(bronze_dir: str) -> tuple[list[str], list[str]]:
@@ -306,14 +308,27 @@ def run_stats(gold_path: str):
         return
 
     gold = pl.read_parquet(gold_path)
-    er = gold["er_mean"].to_numpy()
+    attention_sources = gold.filter(pl.col("is_attention_source"))
+    er_attention = attention_sources["er_mean"].to_numpy()
 
-    ineq = compute_inequality(er)
-    anomaly = compute_anomalies(gold)
-    breakdown = compute_breakdown(gold)
+    ineq = compute_inequality(er_attention)
+    con = compute_expanded_inequality(er_attention)
+    anomaly = compute_anomalies(attention_sources)
+    breakdown = compute_breakdown(attention_sources)
+
+    print("[main] === EXPANDED INEQUALITY ===")
+    print(f"  Gini={con.gini:.4f}  HHI={con.hhi:.1f}  Shannon={con.shannon_entropy:.2f}")
+    print(f"  Top1={con.top1_share:.1%}  Top10={con.top10_share:.1%}  Palma={con.palma_ratio:.1f}")
+    print(f"  RichClub={con.rich_club:.2f}  EffN={con.effective_n:.0f}")
+    
+    domain_con = concentration_by_group(gold, "domain", "er_mean")
+    if len(domain_con) > 0:
+        print("[main] === CONCENTRATION BY DOMAIN ===")
+        for row in domain_con.iter_rows(named=True):
+            print(f"  {row['domain']:15s}  Gini={row['gini']:.4f}  HHI={row['hhi']:.0f}  n={row['n']}")
 
     print(summary_text(ineq, anomaly, breakdown))
-    return ineq, anomaly, breakdown, gold
+    return ineq, anomaly, breakdown, gold, con
 
 
 def main():
@@ -341,17 +356,21 @@ def main():
 
     result = run_stats(gold_path)
     if result:
-        ineq, anomaly, breakdown, gold = result
-        platforms = gold.group_by("platform").agg(pl.len().alias("n")).to_dict(as_series=False)
+        ineq, anomaly, breakdown, gold, con = result
+        attention = gold.filter(pl.col("is_attention_source"))
+        platforms = attention.group_by("platform").agg(pl.len().alias("n")).to_dict(as_series=False)
         plat_dict = dict(zip(platforms["platform"], platforms["n"]))
         from src.analysis.longitudinal import record_snapshot
         record_snapshot(
-            gini=ineq.gini, alpha=ineq.powerlaw_alpha, sigma=ineq.powerlaw_sigma,
+            gini=con.gini, alpha=ineq.powerlaw_alpha, sigma=ineq.powerlaw_sigma,
             n_super_hubs=anomaly.n_super_hubs, super_hub_share=anomaly.super_hub_attention_share,
             n_high_leverage=len(anomaly.high_leverage_nodes), churn=breakdown.churn_acceleration_mean,
             saturation=breakdown.systemic_saturation, n_actors=len(gold),
             n_posts=int(gold["post_count"].sum()), n_platforms=gold["platform"].n_unique(),
             platforms=plat_dict,
+            hhi=con.hhi, shannon=con.shannon_entropy, effective_n=con.effective_n,
+            palma_ratio=con.palma_ratio, top1_share=con.top1_share,
+            rich_club=con.rich_club,
         )
 
     if args.dashboard:

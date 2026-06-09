@@ -11,6 +11,7 @@ IMG = Path("img")
 IMG.mkdir(exist_ok=True)
 
 df = pl.read_parquet("data/gold/fact_metrics.parquet")
+df_attention = df.filter(pl.col("is_attention_source"))
 bronze_dir = Path("data/bronze")
 post_files = list(bronze_dir.glob("*_posts.parquet"))
 posts = pl.concat([pl.read_parquet(f) for f in post_files], how="diagonal") if post_files else pl.DataFrame()
@@ -68,7 +69,7 @@ def _gini(values):
 
 # ─── 1. Lorenz Curve ───
 fig, ax = plt.subplots(figsize=(7, 7))
-er = df["er_mean"].to_numpy()
+er = df_attention["er_mean"].to_numpy()
 er = er[~np.isnan(er) & (er > 0)]
 lx, ly = _lorenz(er)
 ax.plot(lx, ly, color="#00D2FF", linewidth=2.5, label=f"Observed (Gini = {_gini(er):.3f})")

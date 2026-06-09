@@ -13,6 +13,20 @@ class InequalityMetrics(NamedTuple):
     powerlaw_is_pareto: bool
 
 
+class ExpandedInequality(NamedTuple):
+    gini: float
+    hhi: float
+    shannon_entropy: float
+    effective_n: float
+    palma_ratio: float
+    top1_share: float
+    top5_share: float
+    top10_share: float
+    rich_club: float
+    gini_ci_lower: float
+    gini_ci_upper: float
+
+
 class AnomalyReport(NamedTuple):
     n_super_hubs: int
     super_hub_attention_share: float
@@ -78,6 +92,52 @@ def _cooks_distance(x: np.ndarray, y: np.ndarray) -> np.ndarray:
         return np.nan_to_num(d, nan=0.0, posinf=0.0, neginf=0.0)
     except np.linalg.LinAlgError:
         return np.zeros(n)
+
+
+def _shares(values: np.ndarray) -> np.ndarray:
+    total = values.sum()
+    if total == 0:
+        return np.zeros_like(values)
+    return values / total
+
+
+def bootstrap_gini_ci(values: np.ndarray, n_iter: int = 1000) -> tuple[float, float]:
+    values = values[~np.isnan(values) & (values > 0)]
+    if len(values) < 10:
+        return 0.0, 0.0
+    rng = np.random.default_rng(42)
+    boot = np.array([
+        _safe_gini(rng.choice(values, size=len(values), replace=True))
+        for _ in range(n_iter)
+    ])
+    return float(np.percentile(boot, 2.5)), float(np.percentile(boot, 97.5))
+
+
+def compute_expanded_inequality(values: np.ndarray) -> ExpandedInequality:
+    values = values[~np.isnan(values) & (values > 0)]
+    if len(values) < 2:
+        return ExpandedInequality(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    gini = _safe_gini(values)
+    p = _shares(values)
+    hhi = float(np.sum(p ** 2) * 10000)
+    p_pos = p[p > 0]
+    entropy = float(-np.sum(p_pos * np.log(p_pos))) if len(p_pos) > 0 else 0.0
+    eff_n = float(1.0 / np.sum(p ** 2))
+    sorted_v = np.sort(values)
+    top10_val = sorted_v[int(len(sorted_v) * 0.9):].sum()
+    bottom40_val = sorted_v[:int(len(sorted_v) * 0.4)].sum()
+    palma = float(top10_val / bottom40_val) if bottom40_val > 0 else float("inf")
+    sorted_desc = np.sort(values)[::-1]
+    total = sorted_desc.sum()
+    n = len(sorted_desc)
+    t1 = sorted_desc[:max(1, n // 100)].sum() / total if total > 0 else 0
+    t5 = sorted_desc[:max(1, n // 20)].sum() / total if total > 0 else 0
+    t10 = sorted_desc[:max(1, n // 10)].sum() / total if total > 0 else 0
+    threshold = np.percentile(values, 90)
+    rich = values[values >= threshold]
+    rich_club = float(rich.sum() / total / (len(rich) / max(1, len(values)))) if len(rich) >= 2 and total > 0 else 0.0
+    ci_low, ci_high = bootstrap_gini_ci(values)
+    return ExpandedInequality(gini, hhi, entropy, eff_n, palma, t1, t5, t10, rich_club, ci_low, ci_high)
 
 
 def compute_inequality(values: np.ndarray) -> InequalityMetrics:

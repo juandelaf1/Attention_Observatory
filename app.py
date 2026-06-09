@@ -9,8 +9,9 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-from src.stats.inequality import compute_inequality, compute_anomalies, compute_breakdown, _lorenz, _cooks_distance
+from src.stats.inequality import compute_inequality, compute_expanded_inequality, compute_anomalies, compute_breakdown, _lorenz, _cooks_distance
 from src.stats.network import compute_network_metrics, compute_cross_platform_report
+from src.stats.concentration import concentration_by_group
 
 st.set_page_config(page_title="Attention Observatory", page_icon="", layout="wide")
 
@@ -116,7 +117,10 @@ def main():
 
     platforms = df["platform"].unique().to_list()
     selected_platforms = st.sidebar.multiselect("Platform", platforms, default=platforms)
-    exclude_hf = st.sidebar.checkbox("Exclude HuggingFace", value=True)
+    only_attention = st.sidebar.checkbox("Only attention sources (excl. HuggingFace)", value=True)
+
+    domains = df["domain"].unique().to_list()
+    selected_domains = st.sidebar.multiselect("Domain", domains, default=domains)
 
     f_min, f_max = int(df["max_followers"].min()), int(df["max_followers"].max())
     fol_range = st.sidebar.slider("Min followers", f_min, f_max, (f_min, f_max), step=1)
@@ -124,8 +128,10 @@ def main():
     mask = (pl.col("max_followers") >= fol_range[0]) & (pl.col("max_followers") <= fol_range[1])
     if selected_platforms:
         mask &= pl.col("platform").is_in(selected_platforms)
-    if exclude_hf:
-        mask &= ~pl.col("is_huggingface")
+    if selected_domains:
+        mask &= pl.col("domain").is_in(selected_domains)
+    if only_attention:
+        mask &= pl.col("is_attention_source")
 
     filtered = df.filter(mask)
     fpd = filtered.to_pandas()
@@ -138,13 +144,35 @@ def main():
     # ── TAB 1: Overview ──
     with tabs[0]:
         st.header("System Overview")
+        er_vals = filtered["er_mean"].to_numpy()
+        con = compute_expanded_inequality(er_vals)
+
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Actors", len(filtered))
         c2.metric("Posts", int(filtered["post_count"].sum()))
         c3.metric("Platforms", len(filtered["platform"].unique()))
-        c4.metric("Gini", f"{ineq.gini:.4f}")
+        c4.metric("Domains", len(filtered["domain"].unique()))
 
-        st.plotly_chart(platform_bar(filtered), use_container_width=True)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Gini", f"{con.gini:.4f}")
+        c2.metric("HHI", f"{con.hhi:.1f}")
+        c3.metric("Shannon Entropy", f"{con.shannon_entropy:.2f}")
+        c4.metric("Effective N", f"{con.effective_n:.1f}")
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Top 1% Share", f"{con.top1_share:.1%}")
+        c2.metric("Top 10% Share", f"{con.top10_share:.1%}")
+        c3.metric("Palma Ratio", f"{con.palma_ratio:.1f}")
+        c4.metric("Rich Club (p90)", f"{con.rich_club:.2f}")
+
+        r1 = st.columns(2)
+        with r1[0]: st.plotly_chart(platform_bar(filtered), use_container_width=True)
+        with r1[1]:
+            domain_counts = filtered.group_by("domain").len().sort("len", descending=True).to_pandas()
+            fig = px.bar(domain_counts, x="domain", y="len", title="Actors by Domain", color="domain", text="len", labels={"len":"Actors","domain":""})
+            fig.update_traces(textposition="outside")
+            fig.update_layout(plot_bgcolor=BG, showlegend=False, margin=dict(l=40,r=20,t=50,b=40))
+            st.plotly_chart(fig, use_container_width=True)
 
         c1, c2, c3 = st.columns(3)
         c1.metric("External Ecosystem", f"{filtered['has_external_ecosystem'].sum() / max(1,len(filtered)) * 100:.1f}%")
@@ -159,20 +187,42 @@ def main():
     # ── TAB 2: Inequality ──
     with tabs[1]:
         st.header("Attention Inequality")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Gini", f"{ineq.gini:.4f}")
-        c2.metric("Power Law alpha", f"{ineq.powerlaw_alpha:.4f}")
-        c3.metric("Super-Hubs", f"{anomaly.n_super_hubs} ({anomaly.super_hub_attention_share:.1%})")
+        er_vals = filtered["er_mean"].to_numpy()
+        con = compute_expanded_inequality(er_vals)
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Gini", f"{con.gini:.4f}")
+        c2.metric("Gini CI 95%", f"({con.gini_ci_lower:.4f}, {con.gini_ci_upper:.4f})")
+        c3.metric("Power Law alpha", f"{ineq.powerlaw_alpha:.4f}")
+        c4.metric("Super-Hubs", f"{anomaly.n_super_hubs} ({anomaly.super_hub_attention_share:.1%})")
 
         r1 = st.columns([3, 2])
         with r1[0]: st.plotly_chart(lorenz_curve(ineq), use_container_width=True)
-        with r1[1]: st.plotly_chart(er_hist(filtered["er_mean"].to_numpy()), use_container_width=True)
+        with r1[1]: st.plotly_chart(er_hist(er_vals), use_container_width=True)
+
+        st.subheader("Concentration Metrics")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("HHI", f"{con.hhi:.1f}")
+        c2.metric("Shannon Entropy", f"{con.shannon_entropy:.2f}")
+        c3.metric("Effective N", f"{con.effective_n:.1f}")
+        c4.metric("Palma Ratio", f"{con.palma_ratio:.1f}")
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Top 1% Share", f"{con.top1_share:.1%}")
+        c2.metric("Top 5% Share", f"{con.top5_share:.1%}")
+        c3.metric("Top 10% Share", f"{con.top10_share:.1%}")
+        c4.metric("Rich Club (p90)", f"{con.rich_club:.2f}")
 
         pl_plot = powerlaw_plot(filtered, ineq)
         if pl_plot: st.plotly_chart(pl_plot, use_container_width=True)
 
         gbar = gini_by_platform_bar(p5)
         if gbar: st.plotly_chart(gbar, use_container_width=True)
+
+        st.subheader("Concentration by Domain")
+        domain_con = concentration_by_group(filtered, "domain", "er_mean")
+        if len(domain_con) > 0:
+            st.dataframe(domain_con.to_pandas(), use_container_width=True, hide_index=True)
 
     # ── TAB 3: Research ──
     with tabs[2]:
@@ -332,29 +382,50 @@ def main():
             c2.metric("Assortativity", f"{net.degree_assortativity:.4f}")
             c3.metric("Centralization", f"{net.centralization:.4f}")
 
-            st.subheader("Top 10 Most Connected Nodes")
-            if net.top_degree:
-                deg_df = pd.DataFrame(net.top_degree, columns=["actor_id", "degree"])
-                st.dataframe(deg_df, use_container_width=True, hide_index=True)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("K-Core (max)", net.k_core_number)
+            c2.metric("Rich Club Coeff", f"{net.rich_club_coefficient:.4f}")
+            c3.metric("Density", f"{net.density:.5f}")
+
+            st.subheader("Centrality Rankings")
+            c1, c2 = st.columns(2)
+            with c1:
+                if net.top_degree:
+                    st.markdown("**Degree Centrality**")
+                    st.dataframe(pd.DataFrame(net.top_degree, columns=["actor_id", "degree"]), use_container_width=True, hide_index=True)
+                if net.top_pagerank:
+                    st.markdown("**PageRank**")
+                    st.dataframe(pd.DataFrame(net.top_pagerank, columns=["actor_id", "pagerank"]), use_container_width=True, hide_index=True)
+            with c2:
+                if net.top_betweenness:
+                    st.markdown("**Betweenness**")
+                    st.dataframe(pd.DataFrame(net.top_betweenness, columns=["actor_id", "betweenness"]), use_container_width=True, hide_index=True)
+                if net.top_eigenvector:
+                    st.markdown("**Eigenvector**")
+                    st.dataframe(pd.DataFrame(net.top_eigenvector, columns=["actor_id", "eigenvector"]), use_container_width=True, hide_index=True)
 
             st.subheader("Cross-Platform Bridges")
-            st.metric("Total Bridges", cp["total_bridges"])
+            c1, c2 = st.columns(2)
+            c1.metric("Total Bridges", cp["total_bridges"])
+            c2.metric("Cross-Domain Bridges", cp["cross_domain_bridges"])
             if cp["top_pairs"]:
                 pairs_df = pd.DataFrame(cp["top_pairs"])
                 st.dataframe(pairs_df, use_container_width=True, hide_index=True)
+            if cp["top_domain_pairs"]:
+                st.markdown("**Cross-Domain Connections**")
+                st.dataframe(pd.DataFrame(cp["top_domain_pairs"]), use_container_width=True, hide_index=True)
 
             if cp["top_bridges"]:
-                st.subheader("Top Inter-Platform Connections")
-                bridges_df = pd.DataFrame(cp["top_bridges"])
-                bridges_df["similarity"] = bridges_df["similarity"].round(4)
-                st.dataframe(bridges_df, use_container_width=True, hide_index=True)
+                with st.expander("Top Inter-Platform Connections"):
+                    bridges_df = pd.DataFrame(cp["top_bridges"])
+                    bridges_df["similarity"] = bridges_df["similarity"].round(4)
+                    st.dataframe(bridges_df, use_container_width=True, hide_index=True)
 
     st.markdown("---")
     st.caption("Attention Observatory — Empirical model of digital attention distribution.")
-    if exclude_hf:
-        st.caption("HuggingFace excluded from metrics (text dataset, no engagement signal).")
-    else:
-        st.caption("HuggingFace included. Use toggle to exclude for engagement analysis.")
+    if only_attention:
+        st.caption("HuggingFace excluded (corpus_dataset, not an attention network).")
+    st.caption("Gini CI 95% via bootstrap (n=1000). Power Law α via MLE (Clauset 2009).")
 
 if __name__ == "__main__":
     main()

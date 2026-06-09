@@ -2,6 +2,32 @@ import polars as pl
 import numpy as np
 import re
 
+DOMAIN_MAP = {
+    "hackernews": "technology",
+    "wikipedia": "science",
+    "huggingface": "technology",
+    "bluesky": "technology",
+    "mastodon": "technology",
+    "github": "technology",
+    "youtube": "technology",
+    "telegram": "technology",
+    "reddit": "technology",
+}
+
+PLATFORM_TYPE_MAP = {
+    "hackernews": "social_network",
+    "wikipedia": "knowledge_network",
+    "huggingface": "corpus_dataset",
+    "bluesky": "social_network",
+    "mastodon": "social_network",
+    "github": "collaborative_network",
+    "youtube": "social_network",
+    "telegram": "social_network",
+    "reddit": "social_network",
+}
+
+NON_ATTENTION_SOURCES = {"huggingface"}  # excluded from inequality metrics
+
 AFI_KEYWORDS = [
     "exclusive", "limited", "luxury", "haute", "couture", "gala", "premiere",
     "foundation", "institute", "academy", "award", "ceremony", "editorial",
@@ -277,9 +303,12 @@ def run_pipeline(
             pl.col("has_external_ecosystem").fill_null(False),
             pl.col("has_prestige_trajectory").fill_null(False),
         ])
-        .with_columns(
-            pl.when(pl.col("platform") == "huggingface").then(pl.lit(True)).otherwise(pl.lit(False)).alias("is_huggingface")
-        )
+        .with_columns([
+            pl.col("platform").replace_strict(DOMAIN_MAP, default="unknown").alias("domain"),
+            pl.col("platform").replace_strict(PLATFORM_TYPE_MAP, default="unknown").alias("platform_type"),
+            pl.when(pl.col("platform").is_in(NON_ATTENTION_SOURCES)).then(pl.lit(False)).otherwise(pl.lit(True)).alias("is_attention_source"),
+            pl.when(pl.col("platform") == "huggingface").then(pl.lit(True)).otherwise(pl.lit(False)).alias("is_huggingface"),
+        ])
     )
 
     gold = gold.with_columns(

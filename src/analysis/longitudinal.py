@@ -9,7 +9,10 @@ EXECUTIONS_DIR = "data/executions"
 def record_snapshot(gini: float, alpha: float, sigma: float, n_super_hubs: int,
                     super_hub_share: float, n_high_leverage: int, churn: float,
                     saturation: bool, n_actors: int, n_posts: int,
-                    n_platforms: int, platforms: dict) -> str:
+                    n_platforms: int, platforms: dict,
+                    hhi: float | None = None, shannon: float | None = None,
+                    effective_n: float | None = None, palma_ratio: float | None = None,
+                    top1_share: float | None = None, rich_club: float | None = None) -> str:
     os.makedirs(EXECUTIONS_DIR, exist_ok=True)
     ts = datetime.now(timezone.utc)
     snapshot = {
@@ -28,6 +31,18 @@ def record_snapshot(gini: float, alpha: float, sigma: float, n_super_hubs: int,
         "n_platforms": n_platforms,
         "platforms": platforms,
     }
+    if hhi is not None:
+        snapshot["hhi"] = round(hhi, 1)
+    if shannon is not None:
+        snapshot["shannon"] = round(shannon, 4)
+    if effective_n is not None:
+        snapshot["effective_n"] = round(effective_n, 1)
+    if palma_ratio is not None:
+        snapshot["palma_ratio"] = round(palma_ratio, 2)
+    if top1_share is not None:
+        snapshot["top1_share"] = round(top1_share, 6)
+    if rich_club is not None:
+        snapshot["rich_club"] = round(rich_club, 4)
     path = f"{EXECUTIONS_DIR}/{ts.strftime('%Y%m%d_%H%M%S')}.json"
     with open(path, "w", encoding="utf-8") as f:
         json.dump(snapshot, f, indent=2, ensure_ascii=False)
