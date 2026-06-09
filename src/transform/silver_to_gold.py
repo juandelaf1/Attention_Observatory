@@ -76,11 +76,12 @@ def _compute_afi(texts: list[str]) -> list[float]:
 
 
 def _infer_external_ecosystem(followers: np.ndarray, platform: list[str]) -> list[bool]:
+    rng = np.random.default_rng(42)
     result = []
     for f, p in zip(followers, platform):
         threshold = 500000 if p == "reddit" else 100000
         prob = 1 / (1 + np.exp(-0.8 * (np.log10(max(f, 1)) - np.log10(max(threshold, 1)))))
-        result.append(bool(np.random.default_rng().binomial(1, prob)))
+        result.append(bool(rng.binomial(1, prob)))
     return result
 
 
